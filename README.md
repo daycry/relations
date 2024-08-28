@@ -1,6 +1,13 @@
 # relations
 Relations for Codeigniter 4
 
+[![Build status](https://github.com/daycry/relations/actions/workflows/php.yml/badge.svg?branch=master)](https://github.com/daycry/relations/actions/workflows/php.yml)
+[![Coverage Status](https://coveralls.io/repos/github/daycry/relations/badge.svg?branch=master)](https://coveralls.io/github/daycry/relations?branch=master)
+[![Downloads](https://poser.pugx.org/daycry/relations/downloads)](https://packagist.org/packages/daycry/relations)
+[![GitHub release (latest by date)](https://img.shields.io/github/v/release/daycry/relations)](https://packagist.org/packages/daycry/relations)
+[![GitHub stars](https://img.shields.io/github/stars/daycry/relations)](https://packagist.org/packages/daycry/relations)
+[![GitHub license](https://img.shields.io/github/license/daycry/relations)](https://github.com/daycry/relations/blob/master/LICENSE)
+
 ## Quick Start
 
 1. Install with Composer: `> composer require daycry/relations`
