@@ -15,7 +15,7 @@
     "authors": [
         {
             "name": "Daycry",
-            "email": "mgatner@tattersoftware.com",
+            "email": "daycry9@gmail.com",
             "homepage": "https://github.com/daycry",
             "role": "Developer"
         }
@@ -23,7 +23,7 @@
     "homepage": "https://github.com/daycry",
     "require": {
         "php": "^8.1",
-        "daycry/schemas": "^1.0"
+        "daycry/schemas": "^2.0"
     },
     "require-dev": {
         "codeigniter/coding-standard": "*",

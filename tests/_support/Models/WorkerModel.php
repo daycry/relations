@@ -16,9 +16,10 @@ namespace Tests\Support\Models;
 use AllowDynamicProperties;
 use CodeIgniter\Model;
 use Daycry\Relations\Traits\ModelTrait;
+use Daycry\Relations\Contracts\RelatableInterface;
 
 #[AllowDynamicProperties]
-class WorkerModel extends Model
+class WorkerModel extends Model implements RelatableInterface
 {
     use ModelTrait;
 

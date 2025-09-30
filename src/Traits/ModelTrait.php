@@ -255,20 +255,18 @@ trait ModelTrait
         // Harvest the IDs that want relations
         $ids = array_column($rows, $this->primaryKey);
 
-        // Get the schema
-        $schema = $this->_schema();
+        // Prevalidate all requested tables (fail-fast)
+        $validated = [];
+        foreach ($this->tmpWith as $tableName) {
+            $validated[$tableName] = $this->_getRelationship($tableName); // may throw
+        }
 
         // Find the relations for each table
         $relations = $singletons = [];
-
-        foreach ($this->tmpWith as $tableName) {
-            // Check for singletons
-            $relation               = $this->_getRelationship($tableName);
+        foreach ($validated as $tableName => $relation) {
             $singletons[$tableName] = $relation->singleton ? singular($tableName) : false;
-
-            $relations[$tableName] = $this->_getRelations($tableName, $ids);
+            $relations[$tableName]  = $this->_getRelations($tableName, $ids, $relation);
         }
-        unset($schema);
 
         // Inject related items back into the rows
         $return = [];
@@ -299,9 +297,17 @@ trait ModelTrait
             }
         }
 
+        // Preserve loaded tables for hook before resetting tmp state
+        $loadedTables = $this->tmpWith;
+
         // Clear old data and reset per-query properties
         unset($rows);
         $this->resetTmp();
+
+        // Hook: allow extensions to modify injected model relations
+        if (method_exists($this, 'afterRelations')) {
+            $this->afterRelations($return, $loadedTables);
+        }
 
         return $return;
     }

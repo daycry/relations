@@ -116,7 +116,159 @@ Related items are available as faux properties:
 ```
 
 Available magic method verbs are: `has`, `set`, `add`, and `remove`, and are only applicable
-for "manyToMany" relationships.
+for "manyToMany" relationships. For `hasMany` now `set/add/remove` are supported (actualizan la FK del hijo poniendo null cuando se quita).
+
+### Interface & Extensibility (>= next release)
+
+To explicitly mark participating models/entities implement:
+```php
+use Daycry\Relations\Contracts\RelatableInterface;
+class UserModel extends Model implements RelatableInterface { use ModelTrait; }
+class User extends Entity implements RelatableInterface { use EntityTrait; }
+```
+If the interface is missing an exception (`Relations.notRelatable`) is thrown.
+
+Optional extension hooks (define only if needed):
+```php
+protected function afterRelations(array &$rows, array $loadedTables): void { /* mutate or log */ }
+protected function afterEntityRelations(string $table, mixed &$result, bool $keysOnly): void { /* transform */ }
+```
+
+### Instrumentation
+Static metrics are tracked while the process lives:
+```php
+$metrics = \Daycry\Relations\Traits\BaseTrait::getRelationMetrics();
+// ['calls' => 12, 'tables' => ['groups' => 5, 'permissions' => 7]]
+\Daycry\Relations\Traits\BaseTrait::getRelationMetrics(true); // resets
+```
+Use in tests or profiling to detect N+1 patterns.
+Enable via config (`collectMetrics = true`). Disabled by default to avoid overhead in producción.
+
+### Introspección de Relaciones & Carga Forzada (Nuevo)
+
+Para descubrir y trabajar dinámicamente con las relaciones sin revisar el esquema manualmente:
+
+```php
+$model = new UserModel();
+$names = $model->listRelations();
+// p.ej: ['groups','permissions','profile']
+
+$details = $model->relationDetails(); // todas
+/* Ejemplo de $details['groups']:
+[
+	'type' => 'manyToMany',
+	'singleton' => false,
+	'pivots' => [ ['groups_users','group_id','groups_users','user_id'], ... ],
+	'model' => App\Models\GroupModel::class,
+]
+*/
+
+// Solo una relación concreta
+$groupMeta = $model->relationDetails('groups');
+```
+
+En entidades puedes forzar ("eagerizar") la carga de una o varias relaciones después de instanciarla usando `load()`:
+
+```php
+$user = $userModel->find(1); // todavía sin 'groups'
+$user->load(['groups','permissions']); // fuerza carga
+echo count($user->groups);
+```
+
+`load()` normaliza nombres singulares/plurales/camelCase y evita volver a cargar relaciones ya presentes; devuelve la propia entidad para encadenar.
+
+### CLI Debug / Inspección
+
+Se incluye un comando para inspeccionar relaciones detectadas por el esquema:
+
+```bash
+php spark relations:inspect model=App\\Models\\UserModel
+php spark relations:inspect model=App\\Models\\UserModel --details
+php spark relations:inspect model=App\\Models\\UserModel --details --only=groups,permissions
+php spark relations:inspect model=App\\Models\\UserModel --details --json > relations.json
+```
+
+Flags:
+- `--details` imprime tipo, singleton, pivots y modelo asociado.
+- `--only=lista` filtra por relaciones concretas.
+- `--json` salida en JSON (útil para scripts / CI).
+
+Esto facilita auditar el esquema cargado y depurar problemas de configuración.
+
+### Performance & Caching (Nuevo)
+
+Config flags adicionales:
+
+```php
+public bool $collectMetrics = false;        // métricas de carga
+public bool $cacheRelationResults = false;  // cache en memoria por request de resultados reindexados
+public string $belongsToStrategy = 'join';  // reservado para futura estrategia 'in'
+```
+
+Activar `cacheRelationResults` reduce queries repetidas del mismo conjunto de IDs/relación en un mismo ciclo de petición:
+
+```php
+$config = config('Relations');
+$config->cacheRelationResults = true;
+$users = $userModel->with('groups')->findAll();
+// segunda llamada reutiliza resultados en memoria (sin nueva query)
+$again  = $userModel->with('groups')->findAll();
+```
+
+Limpiar manualmente (por ejemplo en un Job largo):
+```php
+\App\Models\UserModel::clearRelationResultCache();
+```
+
+Optimizaciones internas implementadas:
+- Memoización de schema en la instancia.
+- Reutilización del objeto Relation en carga eager.
+- Cache de flag `collectMetrics`.
+- Soporte inicial de `manyThrough` (encadena pivotes con joins).
+
+### Type Overrides (hasMany -> hasOne) / Runtime Cardinality Promotion (New)
+
+Sometimes the generated schema only differentiates broad categories (`hasMany`, `belongsTo`, `manyToMany`) and you need to treat a specific `hasMany` as a one-to-one at runtime (e.g. there is effectively only one related row, enforced via a UNIQUE index, or by business rule). You can promote the relation to behave like a `hasOne` (or force any other supported type) without modifying the schema generation by declaring a simple override on the model.
+
+Add the optional property `relationTypeOverrides` keyed by target table name:
+
+```php
+class ServicerModel extends Model implements RelatableInterface {
+	use \Daycry\Relations\Traits\ModelTrait;
+
+	protected $table = 'servicers';
+	protected $primaryKey = 'id';
+
+	// Promote the default hasMany (servicers -> lawyers) to a hasOne
+	protected array $relationTypeOverrides = [
+		'lawyers' => 'hasOne',
+	];
+}
+```
+
+Behavior changes:
+* Eager load: `$servicer = (new ServicerModel())->with('lawyers')->find(1);` injects a singular property `$servicer->lawyer` instead of `$servicer->lawyers` (no array wrapper).
+* Lazy load (entity path): Accessing `$entity->lawyer` will resolve the promoted singleton (same collapse logic based on `singleton` flag).
+* The underlying schema Relation is never mutated: a cloned relation object is created and cached, so other models/entities using the original relation remain unaffected.
+
+Supported override types: `hasOne`, `hasMany`, `belongsTo`, `manyToMany`, `manyThrough`.
+
+Notes & Recommendations:
+* Only override when you are certain the cardinality is truly one-to-one (ideally enforced by a UNIQUE constraint) to avoid silent data loss (only the first row will be kept in the singleton collapse).
+* Overrides are per-model: two different models referencing the same table can choose different type promotions.
+* Current implementation changes `type` and recomputes `singleton` (`hasOne` / `belongsTo` => true). Forcing `hasMany` while setting a singleton is intentionally not supported—declare `hasOne` instead for clarity.
+* No inference is performed: you explicitly state the desired type; pivots and keys remain those provided by the schema.
+* Introspection (`relationDetails()`) will (future enhancement) be able to expose original vs override type—right now it reflects the effective (overridden) type only.
+
+Minimal example verifying promotion behavior:
+```php
+$servicer = (new ServicerModel())->with('lawyers')->find(1);
+// Access singular promoted relation
+echo $servicer->lawyer->name;
+// Property 'lawyers' will not be set since the relation is treated as singleton.
+```
+
+If you later decide to revert, remove the array entry and the schema's original relation type is used again.
 
 ## Returned items
 

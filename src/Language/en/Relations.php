@@ -22,4 +22,5 @@ return [
     'missingProperty'  => 'Class {0} must have the {1} property to use relations',
     'notRelatable'     => 'Class {0} must implement RelatableInterface to use relations',
     'invalidOperation' => 'Operation {0} not valid on {1}',
+    'unsupportedRelationType' => 'Relation type {0} is not currently supported',
 ];

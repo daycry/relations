@@ -16,9 +16,10 @@ namespace Tests\Support\Models;
 use AllowDynamicProperties;
 use CodeIgniter\Model;
 use Daycry\Relations\Traits\ModelTrait;
+use Daycry\Relations\Contracts\RelatableInterface;
 
 #[AllowDynamicProperties]
-class FactoryModel extends Model
+class FactoryModel extends Model implements RelatableInterface
 {
     use ModelTrait;
 

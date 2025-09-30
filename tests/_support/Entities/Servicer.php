@@ -15,8 +15,9 @@ namespace Tests\Support\Entities;
 
 use CodeIgniter\Entity\Entity;
 use Daycry\Relations\Traits\EntityTrait;
+use Daycry\Relations\Contracts\RelatableInterface;
 
-class Servicer extends Entity
+class Servicer extends Entity implements RelatableInterface
 {
     use EntityTrait;
 

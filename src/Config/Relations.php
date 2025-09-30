@@ -25,4 +25,17 @@ class Relations extends BaseConfig
 
     // Return type to fall back to if no model is available
     public string $defaultReturnType = 'object';
+
+    // Whether to collect in-process relation metrics (calls & table counts)
+    public bool $collectMetrics = false;
+
+    /**
+     * Enable simple in-process caching of relation result sets (per request lifecycle).
+     */
+    public bool $cacheRelationResults = false;
+
+    /**
+     * Strategy for belongsTo loading: 'join' (default) or 'in'. (Reserved for future optimization.)
+     */
+    public string $belongsToStrategy = 'join';
 }

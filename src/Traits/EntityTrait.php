@@ -42,7 +42,7 @@ trait EntityTrait
         $tableName = plural(strtolower($key));
 
         // Check for a matching table
-        if ($schema->tables->{$tableName}) {
+        if (isset($schema->tables->{$tableName})) {
             return $this->relations($tableName);
         }
 
@@ -188,8 +188,33 @@ trait EntityTrait
 
         // Save them for future use
         $this->attributes[$tableName] = $items;
+        $result = $keysOnly ? array_column($items, $this->primaryKey) : $items;
 
-        return $keysOnly ? array_column($items, $this->primaryKey) : $items;
+        // Hook: allow entity-specific post-processing of loaded relation
+        if (method_exists($this, 'afterEntityRelations')) {
+            $this->afterEntityRelations($tableName, $result, $keysOnly);
+        }
+
+        return $result;
+    }
+
+    /**
+     * Force load one or many relations (lazy eager hybrid) and return $this for chaining.
+     * Accepts string or array of table names (in any singular/plural/camel case, will normalize).
+     */
+    public function load(string|array $relations): static
+    {
+        $list = is_array($relations) ? $relations : [$relations];
+        foreach ($list as $name) {
+            // Normalize similar to __get: convert to table format (plural, lower, snake)
+            $table = plural(strtolower(preg_replace('/(?<!^)[A-Z]+/', '_$0', $name)));
+            // Skip if already loaded
+            if (array_key_exists($table, $this->attributes) || array_key_exists(singular($table), $this->attributes)) {
+                continue;
+            }
+            $this->relations($table);
+        }
+        return $this;
     }
 
     /**
@@ -206,6 +231,11 @@ trait EntityTrait
         // Get related items
         $items = $this->attributes[$tableName] ?? $this->relations($tableName);
 
+        // If relation resolution returned null treat as empty set
+        if ($items === null) {
+            return false;
+        }
+
         // If not items matched then always fail
         if (empty($items)) {
             return false;
@@ -219,7 +249,7 @@ trait EntityTrait
         // Otherwise count how many of the requested keys are matched
         $matched = 0;
 
-        foreach ($this->attributes[$tableName] as $entity) {
+    foreach ($this->attributes[$tableName] as $entity) {
             $key = is_array($entity) ? $entity[$this->primaryKey] : $entity->{$this->primaryKey};
 
             if (in_array($key, $keys, false)) {
@@ -252,7 +282,29 @@ trait EntityTrait
         switch ($relation->type) {
             // WIP - need to decide about adding and detaching
             case 'hasMany':
-                break;
+                $pivot       = $relation->pivots[0]; // [parentTable, parentPK, childTable, childFK]
+                $childTable  = $pivot[2];
+                $childFk     = $pivot[3];
+                $parentPkVal = $this->attributes[$this->primaryKey];
+                $db          = db_connect();
+                $db->transStart();
+                $childBuilder = $db->table($childTable);
+                // Fetch current child ids
+                $currentRows = $childBuilder->select('id')->where($childFk, $parentPkVal)->get()->getResultArray();
+                $currentIds  = array_column($currentRows, 'id');
+                $newIds      = $keys ?? [];
+                // Compute diffs
+                $toDetach = array_diff($currentIds, $newIds);
+                $toAttach = array_diff($newIds, $currentIds);
+                if (! empty($toDetach)) {
+                    $db->table($childTable)->whereIn('id', $toDetach)->set($childFk, null)->update();
+                }
+                if (! empty($toAttach)) {
+                    $db->table($childTable)->whereIn('id', $toAttach)->set($childFk, $parentPkVal)->update();
+                }
+                unset($this->attributes[$tableName]);
+                $db->transComplete();
+                return true;
 
                 // Delete entries from the pivot table
             case 'manyToMany':
@@ -260,7 +312,9 @@ trait EntityTrait
                 $pivotTable = $relation->pivots[0][2];
                 $pivotId    = $relation->pivots[0][3];
 
-                $builder = db_connect()->table($pivotTable);
+                $db      = db_connect();
+                $builder = $db->table($pivotTable);
+                $db->transStart();
 
                 // Clear existing relations
                 $builder->where($pivotId, $this->attributes[$this->primaryKey])->delete();
@@ -270,17 +324,19 @@ trait EntityTrait
 
                 // If no keys were supplied then finish
                 if (empty($keys)) {
+                    $db->transComplete();
                     return true;
                 }
 
-                // Add back any specified keys
-                return $this->_add($tableName, $keys);
+                // Add back any specified keys (will manage its own insert logic but within same transaction)
+                $result = $this->_add($tableName, $keys);
+                $db->transComplete();
+                return $result;
 
             default:
                 throw new RuntimeException(lang('Relations.invalidOperation', ['setRelations', $relation->type]));
         }
 
-        return false;
     }
 
     /**
@@ -305,7 +361,16 @@ trait EntityTrait
         switch ($relation->type) {
             // WIP - need to decide about attaching versus adding
             case 'hasMany':
-                break;
+                $pivot       = $relation->pivots[0];
+                $childTable  = $pivot[2];
+                $childFk     = $pivot[3];
+                $parentPkVal = $this->attributes[$this->primaryKey];
+                $db          = db_connect();
+                $db->transStart();
+                $db->table($childTable)->whereIn('id', $keys)->where($childFk, null)->set($childFk, $parentPkVal)->update();
+                unset($this->attributes[$tableName]);
+                $db->transComplete();
+                return true;
 
                 // Add entries to the pivot table
             case 'manyToMany':
@@ -313,31 +378,44 @@ trait EntityTrait
                 $pivotTable = $relation->pivots[0][2];
                 $pivotId    = $relation->pivots[0][3];
                 $targetId   = $relation->pivots[1][1];
-
-                $builder = db_connect()->table($pivotTable);
+                $db      = db_connect();
+                $builder = $db->table($pivotTable);
+                $db->transStart();
 
                 // Remove from the entity so if they are requested they must reload
                 unset($this->attributes[$tableName]);
+                // Fetch existing target ids to avoid duplicate inserts (unique constraints or wasted work)
+                $existing = $builder
+                    ->select($targetId)
+                    ->where($pivotId, $this->attributes[$this->primaryKey])
+                    ->get()
+                    ->getResultArray();
+                $existingIds = array_column($existing, $targetId);
 
-                // Create the link
+                $insertKeys = array_diff($keys, $existingIds);
+
+                if (empty($insertKeys)) {
+                    return true; // nothing new to insert
+                }
+
                 $rows = [];
-
-                foreach ($keys as $key) {
+                foreach ($insertKeys as $key) {
                     $rows[] = [
                         $pivotId  => $this->attributes[$this->primaryKey],
                         $targetId => $key,
                     ];
                 }
 
-                $builder->insertBatch($rows);
-
+                if (! empty($rows)) {
+                    $builder->insertBatch($rows);
+                }
+                $db->transComplete();
                 return true;
 
             default:
                 throw new RuntimeException(lang('Relations.invalidOperation', ['setRelations', $relation->type]));
         }
 
-        return false;
     }
 
     /**
@@ -362,7 +440,16 @@ trait EntityTrait
         switch ($relation->type) {
             // WIP - need to decide about detaching versus deleting
             case 'hasMany':
-                break;
+                $pivot       = $relation->pivots[0];
+                $childTable  = $pivot[2];
+                $childFk     = $pivot[3];
+                $parentPkVal = $this->attributes[$this->primaryKey];
+                $db          = db_connect();
+                $db->transStart();
+                $db->table($childTable)->where($childFk, $parentPkVal)->whereIn('id', $keys)->set($childFk, null)->update();
+                unset($this->attributes[$tableName]);
+                $db->transComplete();
+                return true;
 
                 // Delete entries from the pivot table
             case 'manyToMany':
@@ -370,23 +457,21 @@ trait EntityTrait
                 $pivotTable = $relation->pivots[0][2];
                 $pivotId    = $relation->pivots[0][3];
                 $targetId   = $relation->pivots[1][1];
-
-                // Remove the relations
-                $builder = db_connect()->table($pivotTable);
-                $builder
-                    ->where($pivotId, $this->attributes[$this->primaryKey])
+                $db      = db_connect();
+                $builder = $db->table($pivotTable);
+                $db->transStart();
+                $builder->where($pivotId, $this->attributes[$this->primaryKey])
                     ->whereIn($targetId, $keys)
                     ->delete();
 
                 // Remove from the entity so if requested they will reload
                 unset($this->attributes[$tableName]);
-
+                $db->transComplete();
                 return true;
 
             default:
                 throw new RuntimeException(lang('Relations.invalidOperation', ['setRelations', $relation->type]));
         }
 
-        return false;
     }
 }
